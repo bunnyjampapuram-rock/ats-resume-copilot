@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import time
 from io import BytesIO
 
 import requests
@@ -120,8 +121,10 @@ ORIGINAL RESUME:
 
 def call_ai(provider, endpoint, model, api_key, resume, jd):
     prompt = USER_TEMPLATE.replace("{jd}", jd).replace("{resume}", resume)
+
     if provider == "Ollama (local)":
         url = endpoint.rstrip("/") + "/api/chat"
+        headers = {}
         payload = {
             "model": model,
             "messages": [
@@ -132,13 +135,15 @@ def call_ai(provider, endpoint, model, api_key, resume, jd):
             "format": "json",
             "options": {"temperature": 0.2},
         }
-        response = requests.post(url, json=payload, timeout=240)
-        response.raise_for_status()
-        content = response.json()["message"]["content"]
     else:
         if not api_key:
-            raise ValueError("Enter an API key in the sidebar, or use local Ollama.")
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+            raise ValueError("Enter an API key in the sidebar.")
+
+        url = endpoint.strip()
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
         payload = {
             "model": model,
             "messages": [
@@ -148,12 +153,57 @@ def call_ai(provider, endpoint, model, api_key, resume, jd):
             "temperature": 0.2,
             "response_format": {"type": "json_object"},
         }
-        response = requests.post(endpoint, headers=headers, json=payload, timeout=240)
-        response.raise_for_status()
+
+    # Retry temporary server and rate-limit errors.
+    max_attempts = 3
+    retryable_statuses = {429, 500, 502, 503, 504}
+    response = None
+
+    for attempt in range(max_attempts):
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=120,
+            )
+
+            if response.status_code not in retryable_statuses:
+                response.raise_for_status()
+                break
+
+            if attempt == max_attempts - 1:
+                response.raise_for_status()
+
+        except requests.exceptions.ConnectionError:
+            if attempt == max_attempts - 1:
+                raise
+
+        except requests.exceptions.Timeout:
+            if attempt == max_attempts - 1:
+                raise
+
+        time.sleep(2 ** (attempt + 1))
+
+    if provider == "Ollama (local)":
+        content = response.json()["message"]["content"]
+    else:
         content = response.json()["choices"][0]["message"]["content"]
-    # Strip accidental code fences from providers that don't honor JSON mode.
-    content = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", content, flags=re.I)
-    return json.loads(content)
+
+    # Remove accidental Markdown fences.
+    content = re.sub(
+        r"^\s*```(?:json)?\s*|\s*```\s*$",
+        "",
+        content,
+        flags=re.I,
+    )
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "The AI provider returned an invalid JSON response. Please try again."
+        ) from exc
 
 st.subheader("1 · Add your resume and target job")
 left, right = st.columns([0.9, 1.1], gap="large")
