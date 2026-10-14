@@ -119,7 +119,7 @@ ORIGINAL RESUME:
 """
 
 def call_ai(provider, endpoint, model, api_key, resume, jd):
-    prompt = USER_TEMPLATE.format(jd=jd, resume=resume)
+    prompt = USER_TEMPLATE.replace("{jd}", jd).replace("{resume}", resume)
     if provider == "Ollama (local)":
         url = endpoint.rstrip("/") + "/api/chat"
         payload = {
